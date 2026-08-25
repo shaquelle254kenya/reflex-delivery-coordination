@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Reflex — Delivery Coordination</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#F7F2E9;
+    --paper-2:#EFE7D8;
+    --ink:#241F1C;
+    --muted:#7A7268;
+    --line:#D9CFBB;
+    --brand:#1F4B4C;
+    --brand-dim:#DCE7E3;
+    --requested:#C98A2C;
+    --assigned:#2A5C8A;
+    --picked-up:#6B4FA0;
+    --delivered:#2F7D4F;
+    --danger:#B4432F;
+  }
+  *{ box-sizing:border-box; }
+  body{
+    margin:0;
+    background:var(--paper);
+    color:var(--ink);
+    font-family:'Inter', system-ui, sans-serif;
+    min-height:100vh;
+  }
+
+  .topbar{
+    background:var(--brand);
+    color:var(--paper);
+    padding:16px 20px;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    flex-wrap:wrap;
+    gap:10px;
+  }
+  .brand{
+    font-family:'Space Grotesk', sans-serif;
+    font-weight:700;
+    font-size:19px;
+    letter-spacing:0.2px;
+    display:flex;
+    align-items:center;
+    gap:8px;
+  }
+  .brand .mark{
+    width:10px; height:10px; border-radius:50%;
+    background:#E8A33D;
+  }
+  .config{
+    display:flex; gap:6px; align-items:center;
+  }
+  .config input{
+    background:rgba(255,255,255,0.12);
+    border:1px solid rgba(255,255,255,0.3);
+    color:var(--paper);
+    padding:6px 10px;
+    border-radius:6px;
+    font-size:11.5px;
+    font-family:'IBM Plex Mono', monospace;
+    width:180px;
+  }
+  .config input::placeholder{ color:rgba(247,242,233,0.55); }
+
+  .tabs{
+    display:flex;
+    background:var(--paper-2);
+    border-bottom:1px solid var(--line);
+    padding:0 20px;
+    gap:4px;
+  }
+  .tab{
+    padding:12px 18px;
+    font-family:'Space Grotesk', sans-serif;
+    font-weight:600;
+    font-size:13.5px;
+    color:var(--muted);
+    cursor:pointer;
+    border-bottom:3px solid transparent;
+  }
+  .tab.active{
+    color:var(--brand);
+    border-bottom-color:var(--brand);
+  }
+
+  .view{ display:none; padding:22px 20px 60px; max-width:760px; margin:0 auto; }
+  .view.active{ display:block; }
+
+  h2{
+    font-family:'Space Grotesk', sans-serif;
+    font-size:17px;
+    margin:0 0 4px;
+  }
+  .view-sub{ font-size:12.5px; color:var(--muted); margin-bottom:18px; }
+
+  .field{ margin-bottom:12px; }
+  .field label{
+    display:block;
+    font-size:11px;
+    font-family:'IBM Plex Mono', monospace;
+    text-transform:uppercase;
+    letter-spacing:0.6px;
+    color:var(--muted);
+    margin-bottom:5px;
+  }
+  .field input, .field select{
+    width:100%;
+    padding:10px 12px;
+    border:1px solid var(--line);
+    border-radius:8px;
+    background:#fff;
+    font-size:14px;
+    font-family:'Inter', sans-serif;
+    color:var(--ink);
+  }
+  .btn{
+    background:var(--brand);
+    color:var(--paper);
+    border:none;
+    padding:11px 18px;
+    border-radius:8px;
+    font-weight:600;
+    font-size:13px;
+    cursor:pointer;
+    font-family:'Inter', sans-serif;
+  }
+  .btn:disabled{ opacity:0.5; cursor:not-allowed; }
+  .btn.secondary{ background:transparent; color:var(--brand); border:1px solid var(--brand); }
+  .btn.small{ padding:6px 12px; font-size:12px; }
+
+  .msg{ font-size:12.5px; margin-top:8px; }
+  .msg.err{ color:var(--danger); }
+  .msg.ok{ color:var(--delivered); }
+
+  /* Dispatch ticket card — the signature visual element */
+  .ticket{
+    background:#fff;
+    border:1.5px dashed var(--line);
+    border-radius:10px;
+    padding:16px 18px;
+    margin-bottom:14px;
+    position:relative;
+  }
+  .ticket-top{
+    display:flex; justify-content:space-between; align-items:flex-start;
+    margin-bottom:10px;
+  }
+  .ticket-id{
+    font-family:'IBM Plex Mono', monospace;
+    font-size:11px;
+    color:var(--muted);
+  }
+  .status-pill{
+    font-family:'IBM Plex Mono', monospace;
+    font-size:10.5px;
+    text-transform:uppercase;
+    letter-spacing:0.5px;
+    padding:3px 9px;
+    border-radius:999px;
+    color:#fff;
+  }
+  .status-requested{ background:var(--requested); }
+  .status-assigned{ background:var(--assigned); }
+  .status-picked_up{ background:var(--picked-up); }
+  .status-delivered{ background:var(--delivered); }
+
+  .ticket-title{ font-weight:600; font-size:14.5px; margin-bottom:2px; }
+  .ticket-detail{ font-size:12.5px; color:var(--muted); line-height:1.5; }
+  .ticket-actions{ margin-top:12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .code-badge{
+    font-family:'IBM Plex Mono', monospace;
+    font-size:12px;
+    background:var(--brand-dim);
+    color:var(--brand);
+    padding:4px 9px;
+    border-radius:6px;
+  }
+  .empty{ color:var(--muted); font-size:13px; padding:20px 0; text-align:center; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand"><span class="mark"></span>Reflex</div>
+  <div class="config">
+    <input id="apiBase" type="text" value="http://localhost:5057" placeholder="API base URL" />
+  </div>
+</div>
+
+<div class="tabs">
+  <div class="tab active" data-view="retailer">Retailer</div>
+  <div class="tab" data-view="dispatcher">Dispatcher</div>
+  <div class="tab" data-view="rider">Rider</div>
+</div>
+
+<!-- RETAILER VIEW -->
+<div class="view active" id="view-retailer">
+  <h2>Log a delivery request</h2>
+  <div class="view-sub">Retailer staff — send an item out for delivery</div>
+
+  <div class="field"><label>Customer name</label><input id="r-name" placeholder="e.g. Jane Doe" /></div>
+  <div class="field"><label>Customer phone</label><input id="r-phone" placeholder="e.g. 0722000000" /></div>
+  <div class="field"><label>Delivery address</label><input id="r-address" placeholder="e.g. Kilimani, Nairobi" /></div>
+  <div class="field"><label>Item description</label><input id="r-item" placeholder="e.g. Blood pressure monitor" /></div>
+  <button class="btn" id="r-submit">Log delivery request</button>
+  <div class="msg" id="r-msg"></div>
+
+  <h2 style="margin-top:28px;">Your requests</h2>
+  <div id="r-list"></div>
+</div>
+
+<!-- DISPATCHER VIEW -->
+<div class="view" id="view-dispatcher">
+  <h2>Open requests</h2>
+  <div class="view-sub">Assign each to a rider</div>
+  <div id="d-open"></div>
+
+  <h2 style="margin-top:28px;">All active deliveries</h2>
+  <div id="d-all"></div>
+</div>
+
+<!-- RIDER VIEW -->
+<div class="view" id="view-rider">
+  <h2>My deliveries</h2>
+  <div class="field" style="max-width:220px;">
+    <label>Rider</label>
+    <select id="rider-select">
+      <option value="1">Brian Otieno</option>
+      <option value="2">Faith Wanjiru</option>
+      <option value="3">Musa Abdi</option>
+    </select>
+  </div>
+  <div id="rider-list"></div>
+</div>
+
+<script>
+function apiBase() { return document.getElementById('apiBase').value.trim().replace(/\/+$/, ''); }
+
+async function api(path, opts = {}) {
+  const res = await fetch(apiBase() + path, {
+    headers: { 'Content-Type': 'application/json' },
+    ...opts,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!
