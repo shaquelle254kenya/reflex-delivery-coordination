@@ -1,0 +1,19 @@
+{
+  "name": "reflex-backend",
+  "version": "1.0.0",
+  "description": "Reflex delivery-coordination API (Readiness Sprint case study)",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "jest"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "express": "^5.2.1",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "jest": "^30.4.2",
+    "supertest": "^7.2.2"
+  }
+}
