@@ -1,90 +1,84 @@
 // src/store.js
 //
-// STARTER for feature/database-and-auth
-//
-// Drop-in replacement for the original JSON-file store — same method names,
-// same return shapes — so server.js and the tests barely need to change.
-// This is the fix for trade-off #1 in docs/trade-offs.md (no transactions,
-// risk of concurrent writes clobbering each other).
+// Deliberately simple: an in-memory store that persists to a local JSON file
+// on every write. This is a conscious architecture choice for this sprint,
+// not an oversight — see docs/architecture.md and docs/trade-offs.md for the
+// reasoning and what would change for production scale.
 
-const Database = require('better-sqlite3');
+const fs = require('fs');
 const path = require('path');
 
-const db = new Database(path.join(__dirname, '..', 'reflex.db'));
-db.pragma('journal_mode = WAL'); // safe concurrent reads while a write is in progress
+const DATA_FILE = path.join(__dirname, '..', 'data.json');
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS riders (
-    id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL,
-    phone TEXT,
-    passwordHash TEXT
-  );
+function load() {
+  if (!fs.existsSync(DATA_FILE)) {
+    return { deliveries: [], riders: seedRiders(), nextDeliveryId: 1 };
+  }
+  return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+}
 
-  CREATE TABLE IF NOT EXISTS deliveries (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    customerName TEXT NOT NULL,
-    customerPhone TEXT NOT NULL,
-    address TEXT NOT NULL,
-    itemDescription TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'requested',
-    riderId INTEGER,
-    confirmationCode TEXT NOT NULL,
-    createdAt TEXT NOT NULL,
-    updatedAt TEXT NOT NULL,
-    FOREIGN KEY (riderId) REFERENCES riders(id)
-  );
-`);
+function seedRiders() {
+  return [
+    { id: 1, name: 'Brian Otieno', phone: '0711000001' },
+    { id: 2, name: 'Faith Wanjiru', phone: '0711000002' },
+    { id: 3, name: 'Musa Abdi', phone: '0711000003' },
+  ];
+}
 
-// Seed demo riders once (TODO: replace with a real signup flow — passwords
-// below are placeholders, see auth.js for how login checks them)
-const riderCount = db.prepare('SELECT COUNT(*) as n FROM riders').get().n;
-if (riderCount === 0) {
-  const bcrypt = require('bcryptjs');
-  const insert = db.prepare('INSERT INTO riders (id, name, phone, passwordHash) VALUES (?, ?, ?, ?)');
-  const demoHash = bcrypt.hashSync('password123', 10); // TODO: real passwords per rider
-  insert.run(1, 'Brian Otieno', '0711000001', demoHash);
-  insert.run(2, 'Faith Wanjiru', '0711000002', demoHash);
-  insert.run(3, 'Musa Abdi', '0711000003', demoHash);
+let state = load();
+
+function save() {
+  fs.writeFileSync(DATA_FILE, JSON.stringify(state, null, 2));
 }
 
 function generateConfirmationCode() {
+  // Short, human-typeable fallback in case a camera scan isn't possible —
+  // the same code is also encoded into the QR image.
   return Math.random().toString(36).slice(2, 8).toUpperCase();
 }
 
 const store = {
   getAllDeliveries(filter = {}) {
-    let query = 'SELECT * FROM deliveries WHERE 1=1';
-    const params = [];
-    if (filter.status) { query += ' AND status = ?'; params.push(filter.status); }
-    if (filter.riderId) { query += ' AND riderId = ?'; params.push(Number(filter.riderId)); }
-    return db.prepare(query).all(...params);
+    let results = state.deliveries;
+    if (filter.status) results = results.filter((d) => d.status === filter.status);
+    if (filter.riderId) results = results.filter((d) => d.riderId === Number(filter.riderId));
+    return results;
   },
 
   getDelivery(id) {
-    return db.prepare('SELECT * FROM deliveries WHERE id = ?').get(Number(id));
+    return state.deliveries.find((d) => d.id === Number(id));
   },
 
   createDelivery({ customerName, customerPhone, address, itemDescription }) {
-    const now = new Date().toISOString();
-    const code = generateConfirmationCode();
-    const result = db.prepare(`
-      INSERT INTO deliveries (customerName, customerPhone, address, itemDescription, status, riderId, confirmationCode, createdAt, updatedAt)
-      VALUES (?, ?, ?, ?, 'requested', NULL, ?, ?, ?)
-    `).run(customerName, customerPhone, address, itemDescription, code, now, now);
-    return store.getDelivery(result.lastInsertRowid);
+    const delivery = {
+      id: state.nextDeliveryId++,
+      customerName,
+      customerPhone,
+      address,
+      itemDescription,
+      status: 'requested', // requested -> assigned -> picked_up -> delivered
+      riderId: null,
+      confirmationCode: generateConfirmationCode(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    state.deliveries.push(delivery);
+    save();
+    return delivery;
   },
 
   assignDelivery(id, riderId) {
     const delivery = store.getDelivery(id);
     if (!delivery) return { error: 'not_found' };
     if (delivery.status !== 'requested') return { error: 'invalid_transition', from: delivery.status };
-    const rider = db.prepare('SELECT * FROM riders WHERE id = ?').get(Number(riderId));
+    const rider = state.riders.find((r) => r.id === Number(riderId));
     if (!rider) return { error: 'rider_not_found' };
 
-    db.prepare('UPDATE deliveries SET riderId = ?, status = ?, updatedAt = ? WHERE id = ?')
-      .run(rider.id, 'assigned', new Date().toISOString(), delivery.id);
-    return { delivery: store.getDelivery(id) };
+    delivery.riderId = rider.id;
+    delivery.status = 'assigned';
+    delivery.updatedAt = new Date().toISOString();
+    save();
+    return { delivery };
   },
 
   markPickedUp(id, riderId) {
@@ -93,9 +87,10 @@ const store = {
     if (delivery.status !== 'assigned') return { error: 'invalid_transition', from: delivery.status };
     if (delivery.riderId !== Number(riderId)) return { error: 'not_your_delivery' };
 
-    db.prepare('UPDATE deliveries SET status = ?, updatedAt = ? WHERE id = ?')
-      .run('picked_up', new Date().toISOString(), delivery.id);
-    return { delivery: store.getDelivery(id) };
+    delivery.status = 'picked_up';
+    delivery.updatedAt = new Date().toISOString();
+    save();
+    return { delivery };
   },
 
   confirmDelivered(id, code) {
@@ -104,21 +99,20 @@ const store = {
     if (delivery.status !== 'picked_up') return { error: 'invalid_transition', from: delivery.status };
     if (delivery.confirmationCode !== String(code).toUpperCase()) return { error: 'bad_code' };
 
-    db.prepare('UPDATE deliveries SET status = ?, updatedAt = ? WHERE id = ?')
-      .run('delivered', new Date().toISOString(), delivery.id);
-    return { delivery: store.getDelivery(id) };
+    delivery.status = 'delivered';
+    delivery.updatedAt = new Date().toISOString();
+    save();
+    return { delivery };
   },
 
   getRiders() {
-    return db.prepare('SELECT id, name, phone FROM riders').all(); // never return passwordHash
+    return state.riders;
   },
 
-  getRiderByName(name) {
-    return db.prepare('SELECT * FROM riders WHERE name = ?').get(name);
-  },
-
+  // Test-only helper: reset to a clean slate without restarting the process.
   _resetForTests() {
-    db.exec('DELETE FROM deliveries; DELETE FROM sqlite_sequence WHERE name="deliveries";');
+    state = { deliveries: [], riders: seedRiders(), nextDeliveryId: 1 };
+    save();
   },
 };
 
