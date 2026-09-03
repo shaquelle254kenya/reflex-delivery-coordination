@@ -138,7 +138,6 @@
   .msg.err{ color:var(--danger); }
   .msg.ok{ color:var(--delivered); }
 
-  /* Dispatch ticket card — the signature visual element */
   .ticket{
     background:#fff;
     border:1.5px dashed var(--line);
@@ -185,8 +184,7 @@
 </style>
 </head>
 <body>
-
-<div class="topbar">
+  <div class="topbar">
   <div class="brand"><span class="mark"></span>Reflex</div>
   <div class="config">
     <input id="apiBase" type="text" value="http://localhost:5057" placeholder="API base URL" />
@@ -199,7 +197,6 @@
   <div class="tab" data-view="rider">Rider</div>
 </div>
 
-<!-- RETAILER VIEW -->
 <div class="view active" id="view-retailer">
   <h2>Log a delivery request</h2>
   <div class="view-sub">Retailer staff — send an item out for delivery</div>
@@ -215,7 +212,6 @@
   <div id="r-list"></div>
 </div>
 
-<!-- DISPATCHER VIEW -->
 <div class="view" id="view-dispatcher">
   <h2>Open requests</h2>
   <div class="view-sub">Assign each to a rider</div>
@@ -225,7 +221,6 @@
   <div id="d-all"></div>
 </div>
 
-<!-- RIDER VIEW -->
 <div class="view" id="view-rider">
   <h2>My deliveries</h2>
   <div class="field" style="max-width:220px;">
@@ -248,4 +243,163 @@ async function api(path, opts = {}) {
     ...opts,
   });
   const data = await res.json().catch(() => ({}));
-  if (!
+  if (!res.ok) throw new Error(data.error || `request failed (${res.status})`);
+  return data;
+}
+
+document.querySelectorAll('.tab').forEach((tab) => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active'));
+    document.querySelectorAll('.view').forEach((v) => v.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('view-' + tab.dataset.view).classList.add('active');
+    refreshAll();
+  });
+});
+
+function statusLabel(s) { return s.replace('_', ' '); }
+
+function ticketHtml(d, actionsHtml) {
+  return `
+    <div class="ticket">
+      <div class="ticket-top">
+        <span class="ticket-id">#${d.id} · ${new Date(d.createdAt).toLocaleTimeString()}</span>
+        <span class="status-pill status-${d.status}">${statusLabel(d.status)}</span>
+      </div>
+      <div class="ticket-title">${d.itemDescription}</div>
+      <div class="ticket-detail">${d.customerName} · ${d.customerPhone}<br/>${d.address}</div>
+      ${actionsHtml || ''}
+    </div>
+  `;
+}
+
+document.getElementById('r-submit').addEventListener('click', async () => {
+  const msg = document.getElementById('r-msg');
+  msg.textContent = '';
+  try {
+    await api('/deliveries', {
+      method: 'POST',
+      body: JSON.stringify({
+        customerName: document.getElementById('r-name').value,
+        customerPhone: document.getElementById('r-phone').value,
+        address: document.getElementById('r-address').value,
+        itemDescription: document.getElementById('r-item').value,
+      }),
+    });
+    msg.className = 'msg ok';
+    msg.textContent = 'Delivery request logged.';
+    ['r-name', 'r-phone', 'r-address', 'r-item'].forEach((id) => (document.getElementById(id).value = ''));
+    loadRetailer();
+  } catch (e) {
+    msg.className = 'msg err';
+    msg.textContent = e.message;
+  }
+});
+
+async function loadRetailer() {
+  const list = document.getElementById('r-list');
+  try {
+    const deliveries = await api('/deliveries');
+    list.innerHTML = deliveries.length
+      ? deliveries.slice().reverse().map((d) => ticketHtml(d)).join('')
+      : '<div class="empty">No requests yet.</div>';
+  } catch (e) {
+    list.innerHTML = `<div class="msg err">${e.message}</div>`;
+  }
+}
+
+async function loadDispatcher() {
+  const openEl = document.getElementById('d-open');
+  const allEl = document.getElementById('d-all');
+  try {
+    const [open, all, riders] = await Promise.all([
+      api('/deliveries?status=requested'),
+      api('/deliveries'),
+      api('/riders'),
+    ]);
+
+    openEl.innerHTML = open.length
+      ? open.map((d) => ticketHtml(d, `
+          <div class="ticket-actions">
+            <select id="assign-${d.id}">
+              ${riders.map((r) => `<option value="${r.id}">${r.name}</option>`).join('')}
+            </select>
+            <button class="btn small" onclick="assignDelivery(${d.id})">Assign</button>
+          </div>
+        `)).join('')
+      : '<div class="empty">No open requests — all caught up.</div>';
+
+    allEl.innerHTML = all.length
+      ? all.slice().reverse().map((d) => ticketHtml(d)).join('')
+      : '<div class="empty">No deliveries yet.</div>';
+  } catch (e) {
+    openEl.innerHTML = `<div class="msg err">${e.message}</div>`;
+  }
+}
+
+async function assignDelivery(id) {
+  const riderId = document.getElementById('assign-' + id).value;
+  try {
+    await api(`/deliveries/${id}/assign`, { method: 'PATCH', body: JSON.stringify({ riderId }) });
+    loadDispatcher();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+document.getElementById('rider-select').addEventListener('change', loadRider);
+
+async function loadRider() {
+  const riderId = document.getElementById('rider-select').value;
+  const list = document.getElementById('rider-list');
+  try {
+    const deliveries = await api(`/deliveries?riderId=${riderId}`);
+    const active = deliveries.filter((d) => d.status !== 'delivered');
+    list.innerHTML = active.length
+      ? active.map((d) => {
+          let actions = '';
+          if (d.status === 'assigned') {
+            actions = `<div class="ticket-actions"><button class="btn small" onclick="markPickedUp(${d.id}, ${riderId})">Mark picked up</button></div>`;
+          } else if (d.status === 'picked_up') {
+            actions = `<div class="ticket-actions">
+              <input id="code-${d.id}" placeholder="Scan or type confirmation code" style="flex:1; min-width:160px; padding:7px 10px; border:1px solid var(--line); border-radius:6px; font-family:'IBM Plex Mono',monospace; font-size:12px;" />
+              <button class="btn small" onclick="confirmDelivery(${d.id})">Confirm delivered</button>
+            </div>`;
+          }
+          return ticketHtml(d, actions);
+        }).join('')
+      : '<div class="empty">No active deliveries assigned to you.</div>';
+  } catch (e) {
+    list.innerHTML = `<div class="msg err">${e.message}</div>`;
+  }
+}
+
+async function markPickedUp(id, riderId) {
+  try {
+    await api(`/deliveries/${id}/pickup`, { method: 'PATCH', body: JSON.stringify({ riderId: Number(riderId) }) });
+    loadRider();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function confirmDelivery(id) {
+  const code = document.getElementById('code-' + id).value;
+  try {
+    await api(`/deliveries/${id}/confirm`, { method: 'POST', body: JSON.stringify({ code }) });
+    loadRider();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+function refreshAll() {
+  loadRetailer();
+  loadDispatcher();
+  loadRider();
+}
+refreshAll();
+setInterval(refreshAll, 4000);
+</script>
+</body>
+</html>
