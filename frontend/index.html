@@ -352,11 +352,24 @@ document.getElementById('rider-select').addEventListener('change', loadRider);
 async function loadRider() {
   const riderId = document.getElementById('rider-select').value;
   const list = document.getElementById('rider-list');
+
+  // The 4-second auto-refresh used to wipe out whatever the rider was
+  // typing into the confirmation-code field, since it rebuilds the whole
+  // list every time. Save the in-progress value + cursor position + focus
+  // here, then restore them after re-rendering below.
+  const active = document.activeElement;
+  const wasFocusedId = active && active.id && active.id.startsWith('code-') ? active.id : null;
+  const wasSelectionStart = wasFocusedId ? active.selectionStart : null;
+  const preservedValues = {};
+  list.querySelectorAll('input[id^="code-"]').forEach((input) => {
+    preservedValues[input.id] = input.value;
+  });
+
   try {
     const deliveries = await api(`/deliveries?riderId=${riderId}`);
-    const active = deliveries.filter((d) => d.status !== 'delivered');
-    list.innerHTML = active.length
-      ? active.map((d) => {
+    const active2 = deliveries.filter((d) => d.status !== 'delivered');
+    list.innerHTML = active2.length
+      ? active2.map((d) => {
           let actions = '';
           if (d.status === 'assigned') {
             actions = `<div class="ticket-actions"><button class="btn small" onclick="markPickedUp(${d.id}, ${riderId})">Mark picked up</button></div>`;
@@ -369,6 +382,19 @@ async function loadRider() {
           return ticketHtml(d, actions);
         }).join('')
       : '<div class="empty">No active deliveries assigned to you.</div>';
+
+    // Restore whatever the rider had typed, and put their cursor back.
+    Object.keys(preservedValues).forEach((id) => {
+      const el = document.getElementById(id);
+      if (el && preservedValues[id]) el.value = preservedValues[id];
+    });
+    if (wasFocusedId) {
+      const el = document.getElementById(wasFocusedId);
+      if (el) {
+        el.focus();
+        if (wasSelectionStart != null) el.setSelectionRange(wasSelectionStart, wasSelectionStart);
+      }
+    }
   } catch (e) {
     list.innerHTML = `<div class="msg err">${e.message}</div>`;
   }
