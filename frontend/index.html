@@ -259,7 +259,7 @@ document.querySelectorAll('.tab').forEach((tab) => {
 
 function statusLabel(s) { return s.replace('_', ' '); }
 
-function ticketHtml(d, actionsHtml) {
+function ticketHtml(d, actionsHtml, showCode) {
   return `
     <div class="ticket">
       <div class="ticket-top">
@@ -268,6 +268,7 @@ function ticketHtml(d, actionsHtml) {
       </div>
       <div class="ticket-title">${d.itemDescription}</div>
       <div class="ticket-detail">${d.customerName} · ${d.customerPhone}<br/>${d.address}</div>
+      ${showCode && d.status !== 'delivered' ? `<div class="code-badge" style="margin-top:8px; display:inline-block;">Confirmation code: ${d.confirmationCode}</div>` : ''}
       ${actionsHtml || ''}
     </div>
   `;
@@ -301,7 +302,7 @@ async function loadRetailer() {
   try {
     const deliveries = await api('/deliveries');
     list.innerHTML = deliveries.length
-      ? deliveries.slice().reverse().map((d) => ticketHtml(d)).join('')
+      ? deliveries.slice().reverse().map((d) => ticketHtml(d, null, true)).join('')
       : '<div class="empty">No requests yet.</div>';
   } catch (e) {
     list.innerHTML = `<div class="msg err">${e.message}</div>`;
