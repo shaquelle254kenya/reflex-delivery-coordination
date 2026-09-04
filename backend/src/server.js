@@ -1,21 +1,39 @@
 // src/server.js
+//
+// v2: everything wired together.
+// - Rider identity now comes from a verified JWT (auth.js), not a client-
+//   supplied riderId, for pickup/confirm/location actions.
+// - Every successful state change broadcasts instantly over Socket.io
+//   (realtime.js) instead of clients polling.
+// - Every successful state change also attempts an SMS to the customer
+//   (notifications.js) — fires-and-forgets, never blocks the response.
+// - New POST /riders/:id/location for the native rider app branch.
+
 const express = require('express');
+const http = require('http');
 const QRCode = require('qrcode');
 const store = require('./store');
+const { login, requireAuth } = require('./auth');
+const { attachRealtime, broadcastDeliveryUpdate } = require('./realtime');
+const { sendStatusNotification } = require('./notifications');
 
 const app = express();
-app.use(express.json());
+const server = http.createServer(app);
+attachRealtime(server);
 
-// Allow the frontend (served separately, or opened as a local file) to call this API.
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET,POST,PATCH,OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
+app.use(express.json());
 
-// --- Retailer: log a new delivery request ---
+// --- Auth ---
+app.post('/login', login);
+
+// --- Retailer: log a new delivery request (no auth - matches original scope) ---
 app.post('/deliveries', (req, res) => {
   const { customerName, customerPhone, address, itemDescription } = req.body || {};
   const missing = ['customerName', 'customerPhone', 'address', 'itemDescription'].filter(
@@ -34,9 +52,6 @@ app.post('/deliveries', (req, res) => {
   res.status(201).json(delivery);
 });
 
-// --- Anyone: list deliveries, optionally filtered ---
-// Dispatcher uses ?status=requested to see open work.
-// Rider uses ?riderId=2 to see their own assigned work.
 app.get('/deliveries', (req, res) => {
   const { status, riderId } = req.query;
   res.json(store.getAllDeliveries({ status, riderId }));
@@ -48,7 +63,7 @@ app.get('/deliveries/:id', (req, res) => {
   res.json(delivery);
 });
 
-// --- Dispatcher: assign an open request to a rider ---
+// --- Dispatcher: assign (no auth - matches original scope, dispatcher login not yet built) ---
 app.patch('/deliveries/:id/assign', (req, res) => {
   const { riderId } = req.body || {};
   if (!riderId) return res.status(400).json({ error: 'riderId is required' });
@@ -59,13 +74,15 @@ app.patch('/deliveries/:id/assign', (req, res) => {
   if (result.error === 'invalid_transition') {
     return res.status(409).json({ error: `cannot assign a delivery that is already "${result.from}"` });
   }
+
+  broadcastDeliveryUpdate(result.delivery);
+  sendStatusNotification(result.delivery); // fire-and-forget
   res.json(result.delivery);
 });
 
-// --- Rider: mark picked up from the retailer ---
-app.patch('/deliveries/:id/pickup', (req, res) => {
-  const { riderId } = req.body || {};
-  if (!riderId) return res.status(400).json({ error: 'riderId is required' });
+// --- Rider: pickup - NOW REQUIRES AUTH, identity from token not request body ---
+app.patch('/deliveries/:id/pickup', requireAuth, (req, res) => {
+  const riderId = req.user.riderId;
 
   const result = store.markPickedUp(req.params.id, riderId);
   if (result.error === 'not_found') return res.status(404).json({ error: 'delivery not found' });
@@ -73,11 +90,14 @@ app.patch('/deliveries/:id/pickup', (req, res) => {
   if (result.error === 'invalid_transition') {
     return res.status(409).json({ error: `cannot mark picked up from status "${result.from}"` });
   }
+
+  broadcastDeliveryUpdate(result.delivery);
+  sendStatusNotification(result.delivery);
   res.json(result.delivery);
 });
 
-// --- Rider: confirm final delivery via scanned/typed code (proof of delivery) ---
-app.post('/deliveries/:id/confirm', (req, res) => {
+// --- Rider: confirm - NOW REQUIRES AUTH (any logged-in rider with the right code) ---
+app.post('/deliveries/:id/confirm', requireAuth, (req, res) => {
   const { code } = req.body || {};
   if (!code) return res.status(400).json({ error: 'code is required' });
 
@@ -87,27 +107,37 @@ app.post('/deliveries/:id/confirm', (req, res) => {
   if (result.error === 'invalid_transition') {
     return res.status(409).json({ error: `cannot confirm delivery from status "${result.from}" — must be picked_up first` });
   }
+
+  broadcastDeliveryUpdate(result.delivery);
+  sendStatusNotification(result.delivery);
   res.json(result.delivery);
 });
 
-// --- QR code image for a delivery's confirmation code (for the retailer to print/show) ---
 app.get('/deliveries/:id/qr', async (req, res) => {
   const delivery = store.getDelivery(req.params.id);
   if (!delivery) return res.status(404).json({ error: 'not_found' });
-
   const dataUrl = await QRCode.toDataURL(delivery.confirmationCode, { width: 220 });
   res.json({ deliveryId: delivery.id, confirmationCode: delivery.confirmationCode, qrDataUrl: dataUrl });
 });
 
-app.get('/riders', (req, res) => {
-  res.json(store.getRiders());
+app.get('/riders', (req, res) => res.json(store.getRiders()));
+
+// --- New: rider location reporting (for the native rider app branch) ---
+app.post('/riders/:id/location', requireAuth, (req, res) => {
+  const { lat, lng } = req.body || {};
+  if (typeof lat !== 'number' || typeof lng !== 'number') {
+    return res.status(400).json({ error: 'lat and lng must be numbers' });
+  }
+  const result = store.updateRiderLocation(req.user.riderId, lat, lng);
+  if (result.error) return res.status(404).json({ error: result.error });
+  res.json({ ok: true });
 });
 
-app.get('/health', (req, res) => res.json({ ok: true }));
+app.get('/health', (req, res) => res.json({ ok: true, version: 'v2' }));
 
-const PORT = process.env.PORT || 5057; // 6000 is a Chrome-blocked "unsafe port" (X11), avoid it
+const PORT = process.env.PORT || 5057;
 if (require.main === module) {
-  app.listen(PORT, () => console.log(`reflex-api listening on :${PORT}`));
+  server.listen(PORT, () => console.log(`reflex-api v2 listening on :${PORT}`));
 }
 
-module.exports = app;
+module.exports = { app, server };
