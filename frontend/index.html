@@ -6,6 +6,7 @@
 <title>Reflex — Delivery Coordination</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 <style>
   :root{
     --paper:#F7F2E9;
@@ -222,16 +223,23 @@
 </div>
 
 <div class="view" id="view-rider">
-  <h2>My deliveries</h2>
-  <div class="field" style="max-width:220px;">
-    <label>Rider</label>
-    <select id="rider-select">
-      <option value="1">Brian Otieno</option>
-      <option value="2">Faith Wanjiru</option>
-      <option value="3">Musa Abdi</option>
-    </select>
+  <div id="rider-login-box">
+    <h2>Rider Login</h2>
+    <div class="view-sub">Log in to see your assigned deliveries</div>
+    <div class="field"><label>Name</label><input id="rider-name" placeholder="e.g. Brian Otieno" /></div>
+    <div class="field"><label>Password</label><input id="rider-password" type="password" placeholder="demo password: password123" /></div>
+
+    <button class="btn" id="rider-login-btn">Log in</button>
+    <div class="msg" id="rider-login-msg"></div>
   </div>
-  <div id="rider-list"></div>
+
+  <div id="rider-dashboard" style="display:none;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+      <h2 style="margin:0;" id="rider-welcome">My deliveries</h2>
+      <button class="btn secondary small" id="rider-logout-btn">Log out</button>
+    </div>
+    <div id="rider-list"></div>
+  </div>
 </div>
 
 <script>
@@ -309,8 +317,7 @@ async function loadRetailer() {
   }
 }
 
-async function loadDispatcher() {
-  const openEl = document.getElementById('d-open');
+async function loadDispatcher() {const openEl = document.getElementById('d-open');
   const allEl = document.getElementById('d-all');
   try {
     const [open, all, riders] = await Promise.all([
@@ -348,16 +355,61 @@ async function assignDelivery(id) {
   }
 }
 
-document.getElementById('rider-select').addEventListener('change', loadRider);
+// --- Rider auth state (kept in memory only - lost on page reload by design,
+// matches the "no persistence layer for tokens yet" scope of this pass) ---
+let riderToken = null;
+let riderId = null;
+let riderName = null;
+
+async function apiAuth(path, opts = {}) {
+  const res = await fetch(apiBase() + path, {
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${riderToken}` },
+    ...opts,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `request failed (${res.status})`);
+  return data;
+}
+
+document.getElementById('rider-login-btn').addEventListener('click', async () => {
+  const msg = document.getElementById('rider-login-msg');
+  msg.textContent = '';
+  try {
+    const result = await api('/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: document.getElementById('rider-name').value,
+        password: document.getElementById('rider-password').value,
+      }),
+    });
+    riderToken = result.token;
+    riderId = result.rider.id;
+    riderName = result.rider.name;
+
+    document.getElementById('rider-login-box').style.display = 'none';
+    document.getElementById('rider-dashboard').style.display = 'block';
+    document.getElementById('rider-welcome').textContent = `${riderName}'s deliveries`;
+    loadRider();
+  } catch (e) {
+    msg.className = 'msg err';
+    msg.textContent = e.message;
+  }
+});
+
+document.getElementById('rider-logout-btn').addEventListener('click', () => {
+  riderToken = null;
+  riderId = null;
+  riderName = null;
+  document.getElementById('rider-login-box').style.display = 'block';
+  document.getElementById('rider-dashboard').style.display = 'none';
+  document.getElementById('rider-name').value = '';
+  document.getElementById('rider-password').value = '';
+});
 
 async function loadRider() {
-  const riderId = document.getElementById('rider-select').value;
+  if (!riderToken) return; // not logged in yet
   const list = document.getElementById('rider-list');
 
-  // The 4-second auto-refresh used to wipe out whatever the rider was
-  // typing into the confirmation-code field, since it rebuilds the whole
-  // list every time. Save the in-progress value + cursor position + focus
-  // here, then restore them after re-rendering below.
   const active = document.activeElement;
   const wasFocusedId = active && active.id && active.id.startsWith('code-') ? active.id : null;
   const wasSelectionStart = wasFocusedId ? active.selectionStart : null;
@@ -368,12 +420,12 @@ async function loadRider() {
 
   try {
     const deliveries = await api(`/deliveries?riderId=${riderId}`);
-    const active2 = deliveries.filter((d) => d.status !== 'delivered');
-    list.innerHTML = active2.length
-      ? active2.map((d) => {
+    const activeDeliveries = deliveries.filter((d) => d.status !== 'delivered');
+    list.innerHTML = activeDeliveries.length
+      ? activeDeliveries.map((d) => {
           let actions = '';
           if (d.status === 'assigned') {
-            actions = `<div class="ticket-actions"><button class="btn small" onclick="markPickedUp(${d.id}, ${riderId})">Mark picked up</button></div>`;
+            actions = `<div class="ticket-actions"><button class="btn small" onclick="markPickedUp(${d.id})">Mark picked up</button></div>`;
           } else if (d.status === 'picked_up') {
             actions = `<div class="ticket-actions">
               <input id="code-${d.id}" placeholder="Scan or type confirmation code" style="flex:1; min-width:160px; padding:7px 10px; border:1px solid var(--line); border-radius:6px; font-family:'IBM Plex Mono',monospace; font-size:12px;" />
@@ -384,7 +436,6 @@ async function loadRider() {
         }).join('')
       : '<div class="empty">No active deliveries assigned to you.</div>';
 
-    // Restore whatever the rider had typed, and put their cursor back.
     Object.keys(preservedValues).forEach((id) => {
       const el = document.getElementById(id);
       if (el && preservedValues[id]) el.value = preservedValues[id];
@@ -401,9 +452,9 @@ async function loadRider() {
   }
 }
 
-async function markPickedUp(id, riderId) {
+async function markPickedUp(id) {
   try {
-    await api(`/deliveries/${id}/pickup`, { method: 'PATCH', body: JSON.stringify({ riderId: Number(riderId) }) });
+    await apiAuth(`/deliveries/${id}/pickup`, { method: 'PATCH', body: JSON.stringify({}) });
     loadRider();
   } catch (e) {
     alert(e.message);
@@ -413,7 +464,7 @@ async function markPickedUp(id, riderId) {
 async function confirmDelivery(id) {
   const code = document.getElementById('code-' + id).value;
   try {
-    await api(`/deliveries/${id}/confirm`, { method: 'POST', body: JSON.stringify({ code }) });
+    await apiAuth(`/deliveries/${id}/confirm`, { method: 'POST', body: JSON.stringify({ code }) });
     loadRider();
   } catch (e) {
     alert(e.message);
@@ -423,10 +474,15 @@ async function confirmDelivery(id) {
 function refreshAll() {
   loadRetailer();
   loadDispatcher();
-  loadRider();
+  if (riderToken) loadRider();
 }
-refreshAll();
-setInterval(refreshAll, 4000);
+refreshAll(); // populate initial state once on load
+
+// Realtime: instead of polling every 4s, listen for server-pushed updates.
+const socket = io(apiBase());
+socket.on('delivery:update', () => refreshAll());
+socket.on('connect_error', () => console.warn('[realtime] could not connect - falling back to manual refresh only'));
+
 </script>
 </body>
 </html>
